@@ -1,0 +1,244 @@
+{
+  "corpus": "01-foundations",
+  "collection": "local-01-foundations",
+  "categories": {
+    "exact_identifier": "问一个确切的函数名/类名/常量名 - 关键词检索的活",
+    "semantic": "概念性问题, 用自然语言描述行为 - 向量检索的主场",
+    "value_lookup": "问某个常量/配置的具体取值 - 必须精确命中定义处",
+    "cross_file": "答案分散在多个文件, 需要多个 chunk 才能拼齐"
+  },
+  "queries": [
+    {
+      "id": "q01",
+      "query": "BLOCKED_COMMANDS 这个常量的值是什么",
+      "category": "value_lookup",
+      "expect_contains": [
+        "BLOCKED_COMMANDS = ["
+      ]
+    },
+    {
+      "id": "q02",
+      "query": "check_command 函数在哪里定义",
+      "category": "exact_identifier",
+      "expect_contains": [
+        "def check_command("
+      ]
+    },
+    {
+      "id": "q03",
+      "query": "ALLOWED_COMMANDS 白名单里有哪些命令",
+      "category": "value_lookup",
+      "expect_contains": [
+        "ALLOWED_COMMANDS = {"
+      ]
+    },
+    {
+      "id": "q04",
+      "query": "SHELL_OPERATORS 包含哪些操作符",
+      "category": "value_lookup",
+      "expect_contains": [
+        "SHELL_OPERATORS = ["
+      ]
+    },
+    {
+      "id": "q05",
+      "query": "切块时每块多少行, 重叠多少行",
+      "category": "value_lookup",
+      "expect_contains": [
+        "CHUNK_SIZE = 50"
+      ]
+    },
+    {
+      "id": "q06",
+      "query": "ChromaDB 用的距离度量是什么",
+      "category": "value_lookup",
+      "expect_contains": [
+        "hnsw:space"
+      ]
+    },
+    {
+      "id": "q07",
+      "query": "agent 循环最多跑多少步",
+      "category": "value_lookup",
+      "expect_contains": [
+        "MAX_STEPS = 10"
+      ]
+    },
+    {
+      "id": "q08",
+      "query": "handle_tool_use 函数",
+      "category": "exact_identifier",
+      "expect_contains": [
+        "def handle_tool_use("
+      ]
+    },
+    {
+      "id": "q09",
+      "query": "collect_text 函数",
+      "category": "exact_identifier",
+      "expect_contains": [
+        "def collect_text("
+      ]
+    },
+    {
+      "id": "q10",
+      "query": "chunk_python 函数",
+      "category": "exact_identifier",
+      "expect_contains": [
+        "def chunk_python("
+      ]
+    },
+    {
+      "id": "q11",
+      "query": "chunk_generic 函数",
+      "category": "exact_identifier",
+      "expect_contains": [
+        "def chunk_generic("
+      ]
+    },
+    {
+      "id": "q12",
+      "query": "collect_files 函数",
+      "category": "exact_identifier",
+      "expect_contains": [
+        "def collect_files("
+      ]
+    },
+    {
+      "id": "q13",
+      "query": "execute_tool 函数",
+      "category": "exact_identifier",
+      "expect_contains": [
+        "def execute_tool("
+      ]
+    },
+    {
+      "id": "q14",
+      "query": "VectorStore 类",
+      "category": "exact_identifier",
+      "expect_contains": [
+        "class VectorStore:"
+      ]
+    },
+    {
+      "id": "q15",
+      "query": "ChatSession 类",
+      "category": "exact_identifier",
+      "expect_contains": [
+        "class ChatSession:"
+      ]
+    },
+    {
+      "id": "q16",
+      "query": "ToolUseChat 类",
+      "category": "exact_identifier",
+      "expect_contains": [
+        "class ToolUseChat:"
+      ]
+    },
+    {
+      "id": "q17",
+      "query": "TOOL_FUNCTIONS 这个字典",
+      "category": "exact_identifier",
+      "expect_contains": [
+        "TOOL_FUNCTIONS = {"
+      ]
+    },
+    {
+      "id": "q18",
+      "query": "怎么判断 agent 应该停止循环",
+      "category": "semantic",
+      "expect_contains": [
+        "stop_reason == \"end_turn\"",
+        "stop_reason != \"tool_use\""
+      ]
+    },
+    {
+      "id": "q19",
+      "query": "执行命令前怎么向用户请求批准",
+      "category": "semantic",
+      "expect_contains": [
+        "Approve? (y/n)"
+      ]
+    },
+    {
+      "id": "q20",
+      "query": "把源代码文件切成小块用于向量检索",
+      "category": "semantic",
+      "expect_contains": [
+        "def chunk_file(",
+        "def chunk_repository("
+      ]
+    },
+    {
+      "id": "q21",
+      "query": "哪些目录在索引时会被跳过",
+      "category": "semantic",
+      "expect_contains": [
+        "SKIP_DIRS = {"
+      ]
+    },
+    {
+      "id": "q22",
+      "query": "哪些文件扩展名会被索引",
+      "category": "semantic",
+      "expect_contains": [
+        "INDEXABLE_EXTENSIONS = {"
+      ]
+    },
+    {
+      "id": "q23",
+      "query": "把工具执行结果加回对话历史",
+      "category": "semantic",
+      "expect_contains": [
+        "\"type\": \"tool_result\""
+      ]
+    },
+    {
+      "id": "q24",
+      "query": "怎么统计一次会话用了多少 token",
+      "category": "semantic",
+      "expect_contains": [
+        "token_tracker",
+        "TokenTracker"
+      ]
+    },
+    {
+      "id": "q25",
+      "query": "不用 shell 直接执行命令",
+      "category": "semantic",
+      "expect_contains": [
+        "def run_command("
+      ]
+    },
+    {
+      "id": "q26",
+      "query": "从索引到检索的完整流程涉及哪些模块",
+      "category": "cross_file",
+      "expect_contains": [
+        "def chunk_repository(",
+        "def index_chunks(",
+        "def add_chunks("
+      ]
+    },
+    {
+      "id": "q27",
+      "query": "黑名单护栏和白名单护栏的区别",
+      "category": "cross_file",
+      "expect_contains": [
+        "BLOCKED_COMMANDS = [",
+        "ALLOWED_COMMANDS = {"
+      ]
+    },
+    {
+      "id": "q28",
+      "query": "这个项目里有几种不同的 agent 实现",
+      "category": "cross_file",
+      "expect_contains": [
+        "class CodingAgent",
+        "def agent(",
+        "class ToolUseChat:"
+      ]
+    }
+  ]
+}

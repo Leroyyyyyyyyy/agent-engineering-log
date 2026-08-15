@@ -1,0 +1,55 @@
+diff --git a/01-foundations/06-codebase-navigator/indexer/chunker.py b/01-foundations/06-codebase-navigator/indexer/chunker.py
+index 70d34ee..c9589f3 100644
+--- a/01-foundations/06-codebase-navigator/indexer/chunker.py
++++ b/01-foundations/06-codebase-navigator/indexer/chunker.py
+@@ -48,6 +48,11 @@ SKIP_DIRS = {
+     ".mypy_cache",
+     ".ruff_cache",
+     "egg-info",
++    # Never index the navigator's own artifacts: cloned third-party repos and
++    # the ChromaDB store itself. Indexing a local path used to sweep these in,
++    # and they drowned out the real corpus (73% of chunks came from repos/).
++    "repos",
++    "data",
+ }
+ 
+ # Max lines per chunk for non-Python files
+@@ -66,15 +71,36 @@ def collect_files(repo_path: Path) -> list[Path]:
+     return sorted(files)
+ 
+ 
++def is_top_level_boundary(line: str) -> bool:
++    """
++    True if this line starts a new top-level unit.
++
++    Splitting only on class/def used to lump every module-level constant into
++    one chunk together with the docstring and imports. A query for any single
++    constant then had to match a vector averaged over all of them.
++    """
++    if line.startswith("class ") or line.startswith("def "):
++        return True
++
++    # Module-level constant: NAME = ... at column 0, e.g. BLOCKED_COMMANDS = [
++    if not line or line[0].isspace() or "=" in line[:1]:
++        return False
++    if "=" not in line:
++        return False
++
++    name = line.split("=")[0].strip()
++    return name.isupper() and name.isidentifier()
++
++
+ def chunk_python(content: str, filepath: str, repo: str) -> list[dict[str, Any]]:
+-    """Chunk Python files by splitting on top-level class/function definitions."""
++    """Chunk Python files by splitting on top-level definitions and constants."""
+     lines = content.split("\n")
+     chunks: list[dict[str, Any]] = []
+     current_chunk_start = 0
+ 
+     for i, line in enumerate(lines):
+         # Split on top-level definitions (no leading whitespace)
+-        if i > 0 and (line.startswith("class ") or line.startswith("def ")):
++        if i > 0 and is_top_level_boundary(line):
+             chunk_content = "\n".join(lines[current_chunk_start:i]).strip()
+             if chunk_content:
+                 chunks.append(

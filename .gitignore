@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+.venv/
+venv/
+
+# Environment variables — never commit credentials
+.env
+.env.local
+
+# macOS
+.DS_Store
