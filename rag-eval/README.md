@@ -21,6 +21,7 @@
 | `queries_en.json` | 同样 28 条的英文版,用于跨语言对照 |
 | `run_eval.py` | 主评测,算 recall@k;跑前先自检 ground truth |
 | `compare_lang.py` | 中英文对照实验 |
+| `reindex.py` | 重建索引,并打印 chunk 来源分布 |
 | `patches/chunker.patch` | 对上游 `indexer/chunker.py` 的两处改动 |
 
 四个类别:
@@ -66,18 +67,29 @@ cd ../agentic-ai-engineering && git apply ../agent-engineering-log/rag-eval/patc
 cd ../agentic-ai-engineering/01-foundations/06-codebase-navigator && uv sync --python 3.13
 ```
 
-然后调 `chunk_repository` → `Embedder` → `index_chunks` 建索引,
-collection 名 `local-01-foundations`,语料指向 `01-foundations`。
+然后建索引。语料和 collection 名都从 `eval_set.json` 读,所以索引和评测集不会跑偏:
 
-> 改了 `chunker.py` 就必须重建索引,否则测的还是旧块。
+```bash
+uv run --directory ../agentic-ai-engineering/01-foundations/06-codebase-navigator python "$PWD/reindex.py"
+```
 
-## 跑
+> **改了 `chunker.py` 就必须重建索引**,否则测的还是旧块,会看到「改动没有任何效果」。
+
+`reindex.py` 做了两件容易被忽略的事:
+
+- **先删旧 collection 再写**。chunk id 是 `<collection>:<filepath>:<start_line>`,
+  改了切块边界之后大部分 id 都会变——直接 `add` 只是把新块追加进去,**旧块原地不动**,
+  语料变成新旧混合。这个坑不报错,只是让每次改动的效果都测不准
+- **打印 chunk 来源分布**。就是这个检查抓出了语料污染(539 个 chunk 里 391 个来自
+  一个 clone 进来的第三方仓库)。在相信任何 recall 数字之前,先扫一眼这张表
+
+## 跑评测
 
 ```bash
 uv run --directory ../agentic-ai-engineering/01-foundations/06-codebase-navigator python "$PWD/run_eval.py"
 ```
 
-对照实验换成 `compare_lang.py` 即可。两个脚本都不需要 API key——
+对照实验换成 `compare_lang.py` 即可。三个脚本都**不需要 API key**——
 embedding 是本地 MiniLM,检索是本地 ChromaDB。
 
 输出三段:整体 recall@k、**按类别拆分**(这段才是能指导行动的)、以及未命中查询的 top-1 实际捞回内容。
