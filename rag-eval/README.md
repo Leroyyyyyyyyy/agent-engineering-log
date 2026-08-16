@@ -31,6 +31,41 @@
 - `value_lookup` — 问某个常量的具体取值,必须精确命中定义处
 - `cross_file` — 答案分散在多个文件,需要多个 chunk 才能拼齐
 
+## eval_set.json 的 schema
+
+每条查询**必须且只能**声明 `expect_any` 或 `expect_all` 其中一个,
+**指标由这个字段决定,不由 `category` 决定**——类别是给人看的分组,不该拿来做判定:
+
+```jsonc
+{
+  "id": "q18",
+  "query": "怎么判断 agent 应该停止循环",
+  "category": "semantic",
+  "expect_any": [                          // 备选写法, 命中任一即算答上 -> hit@k
+    "stop_reason == \"end_turn\"",
+    "stop_reason != \"tool_use\""
+  ]
+}
+{
+  "id": "q26",
+  "query": "从索引到检索的完整流程涉及哪些模块",
+  "category": "cross_file",
+  "expect_all": [                          // 全部必需 -> coverage@k = 命中数/应命中数
+    "def chunk_repository(",
+    "def index_chunks(",
+    "def add_chunks("
+  ]
+}
+```
+
+**为什么要拆**:这两种语义原本共用一个 `expect_contains` 字段。
+「或」和「与」混在一起,任何聚合指标都是错的,而且**不报错**——
+q26 只捞回 3 个期望块里的 1 个,在 hit@k 下记满分。
+
+`run_eval.py` 会在跑之前检查每条查询恰好有一个字段,两个都有或都没有直接报错退出。
+
+ground truth 用**字符串**不用行号:行号随代码改动漂移,评测集第二天就失效。
+
 ## 前置:上游仓库
 
 评测跑在上游教程仓库的 `01-foundations` 上,检索代码(`indexer/`、`store/`)也在那边,

@@ -49,6 +49,20 @@ def load_eval_set() -> dict:
         return json.load(f)
 
 
+def expected_strings(item: dict) -> list[str]:
+    """Every ground-truth string for a query, whichever field it declares."""
+    if "expect_all" in item:
+        return item["expect_all"]
+    return item["expect_any"]
+
+
+def metric_of(item: dict) -> str:
+    """Which metric this query is scored with."""
+    if "expect_all" in item:
+        return "coverage"
+    return "hit"
+
+
 def validate_ground_truth(eval_set: dict) -> list[str]:
     """
     Check that every expected string actually exists in the corpus.
@@ -69,7 +83,10 @@ def validate_ground_truth(eval_set: dict) -> list[str]:
 
     problems = []
     for item in eval_set["queries"]:
-        for expected in item["expect_contains"]:
+        if ("expect_any" in item) == ("expect_all" in item):
+            problems.append(f"{item['id']}: 必须且只能有 expect_any 或 expect_all 其中一个")
+            continue
+        for expected in expected_strings(item):
             if expected not in corpus_text:
                 problems.append(f"{item['id']}: 语料里找不到 {expected!r}")
 
@@ -95,17 +112,84 @@ def first_hit_rank(results: list[dict], expected: list[str]) -> int | None:
     return None
 
 
-def print_report(rows: list[dict], categories: dict) -> None:
-    """Print recall@k overall and broken down by category."""
+def found_count(results: list[dict], expected: list[str], k: int) -> int:
+    """How many of the expected strings appear anywhere in the top-k chunks."""
+    found = 0
+    for needle in expected:
+        for result in results[:k]:
+            if needle in result["content"]:
+                found += 1
+                break
+    return found
+
+
+def score_at(item: dict, results: list[dict], k: int) -> float:
+    """
+    Score one query at k, using the metric its schema asks for.
+
+    expect_any  -> hit@k       备选写法, 命中任一就算答上
+    expect_all  -> coverage@k  答案分散在多处, 按命中比例给分
+
+    Why the split: hit@k asks only whether top-k touched the topic. For a query
+    whose answer is spread across three files, finding 1 of 3 scored the same as
+    finding all 3 - a third of an answer counted as a full one.
+
+    coverage <= hit for every query, so this can only lower a score, never raise
+    one. That is the point: the old cross_file number was inflated.
+    """
+    expected = expected_strings(item)
+    if metric_of(item) == "coverage":
+        return found_count(results, expected, k) / len(expected)
+
+    rank = first_hit_rank(results, expected)
+    if rank is not None and rank <= k:
+        return 1.0
+    return 0.0
+
+
+def mean_score(rows: list[dict], k: int) -> float:
+    """Average score at k over the given rows."""
+    if not rows:
+        return 0.0
+    total = 0.0
+    for row in rows:
+        total += row["scores"][k]
+    return total / len(rows)
+
+
+def print_metric_block(title: str, note: str, rows: list[dict]) -> None:
+    """Print one metric's @k table, or say so when no query uses it."""
     print("\n" + "=" * 72)
-    print("整体 recall@k")
+    print(f"{title}   n={len(rows)}")
+    print(note)
     print("=" * 72)
+    if not rows:
+        print("  (没有查询使用这个指标)")
+        return
     for k in K_VALUES:
-        hits = 0
-        for row in rows:
-            if row["rank"] is not None and row["rank"] <= k:
-                hits += 1
-        print(f"  recall@{k:<3} {hits:>2}/{len(rows)}   {hits / len(rows):.0%}")
+        print(f"  @{k:<3} {mean_score(rows, k):>6.0%}")
+
+
+def print_report(rows: list[dict], categories: dict) -> None:
+    """Print both metrics separately, then the per-category breakdown."""
+    hit_rows = []
+    coverage_rows = []
+    for row in rows:
+        if row["metric"] == "coverage":
+            coverage_rows.append(row)
+        else:
+            hit_rows.append(row)
+
+    print_metric_block(
+        "hit@k        (expect_any)",
+        "  备选写法, top-k 里命中任一即算答上",
+        hit_rows,
+    )
+    print_metric_block(
+        "coverage@k   (expect_all)",
+        "  答案分散在多处, 分数 = 命中数 / 应命中数",
+        coverage_rows,
+    )
 
     print("\n" + "=" * 72)
     print("按类别拆分 (这才是能指导行动的数字)")
@@ -118,26 +202,34 @@ def print_report(rows: list[dict], categories: dict) -> None:
         if not subset:
             continue
 
+        metrics = set()
+        for row in subset:
+            metrics.add(row["metric"])
+        label = "+".join(sorted(metrics))
+
         parts = []
         for k in K_VALUES:
-            hits = 0
-            for row in subset:
-                if row["rank"] is not None and row["rank"] <= k:
-                    hits += 1
-            parts.append(f"@{k}={hits / len(subset):>4.0%}")
-        print(f"  {category:<18} n={len(subset):<3} " + "  ".join(parts))
+            parts.append(f"@{k}={mean_score(subset, k):>4.0%}")
+        print(f"  {category:<18} [{label:<8}] n={len(subset):<3} " + "  ".join(parts))
 
     print("\n" + "=" * 72)
-    print("未命中的查询 (top-10 里一个正确 chunk 都没有)")
+    print("没答全的查询 (按 top-10 判定)")
     print("=" * 72)
-    misses = []
+    problems = []
     for row in rows:
-        if row["rank"] is None:
-            misses.append(row)
-    if not misses:
+        if row["scores"][MAX_K] < 1.0:
+            problems.append(row)
+    if not problems:
         print("  (无)")
-    for row in misses:
+    for row in problems:
+        if row["metric"] == "coverage":
+            state = f"coverage@{MAX_K}={row['scores'][MAX_K]:.0%} ({row['found']}/{row['total']})"
+        elif row["rank"] is None:
+            state = "MISS (top-10 里一个正确 chunk 都没有)"
+        else:
+            state = f"命中在 rank {row['rank']}"
         print(f"  [{row['category']}] {row['id']}  {row['query']}")
+        print(f"      {state}")
         print(f"      top-1 实际捞回: {row['top1']}")
 
 
@@ -160,7 +252,12 @@ def main() -> None:
     rows = []
     for item in eval_set["queries"]:
         results = retrieve(store, embedder, item["query"], collection)
-        rank = first_hit_rank(results, item["expect_contains"])
+        expected = expected_strings(item)
+        metric = metric_of(item)
+
+        scores = {}
+        for k in K_VALUES:
+            scores[k] = score_at(item, results, k)
 
         if results:
             meta = results[0]["metadata"]
@@ -173,13 +270,22 @@ def main() -> None:
                 "id": item["id"],
                 "query": item["query"],
                 "category": item["category"],
-                "rank": rank,
+                "metric": metric,
+                "scores": scores,
+                "rank": first_hit_rank(results, expected),
+                "found": found_count(results, expected, MAX_K),
+                "total": len(expected),
                 "top1": top1,
             }
         )
 
-        mark = f"@{rank}" if rank else "MISS"
-        print(f"  {item['id']}  {mark:<5} {item['query']}")
+        if metric == "coverage":
+            mark = f"{found_count(results, expected, 5)}/{len(expected)}@5"
+        elif rows[-1]["rank"]:
+            mark = f"@{rows[-1]['rank']}"
+        else:
+            mark = "MISS"
+        print(f"  {item['id']}  {mark:<7} {item['query']}")
 
     print_report(rows, eval_set["categories"])
 
