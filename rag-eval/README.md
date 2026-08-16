@@ -7,7 +7,7 @@
 
 这套脚本最早建在 `06-codebase-navigator/eval/`,结果 **它把自己也索引进去了**:
 `.json` 在可索引扩展名里,36 条 ground truth 里 33 条原样写在 `eval_set.json` 中,
-检索直接命中答案键,recall@5 从 43% 虚涨到 64%。脚本里的中文 print 字符串
+检索直接命中答案键,recall@5 从 43% 虚涨到 64%(当时评测集是 28 条)。脚本里的中文 print 字符串
 还在一堆英文代码里成了新的污染源,赢走了 4 条本该由代码 chunk 命中的语义查询。
 
 > **答案键必须和语料物理隔离——放到语料目录外面,不是加 `SKIP_DIRS`。**
@@ -17,8 +17,8 @@
 
 | 文件 | 作用 |
 |--|--|
-| `eval_set.json` | 28 条中文查询 + ground truth,分 4 类 |
-| `queries_en.json` | 同样 28 条的英文版,用于跨语言对照 |
+| `eval_set.json` | 60 条中文查询 + ground truth,分 4 类 |
+| `queries_en.json` | 同样 60 条的英文版,用于跨语言对照 |
 | `run_eval.py` | 主评测,算 recall@k;跑前先自检 ground truth |
 | `compare_lang.py` | 中英文对照实验 |
 | `reindex.py` | 重建索引,并打印 chunk 来源分布 |
