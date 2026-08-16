@@ -1,0 +1,24 @@
+--- a/01-foundations/06-codebase-navigator/indexer/chunker.py	2026-08-16 15:16:52
++++ b/01-foundations/06-codebase-navigator/indexer/chunker.py	2026-08-16 15:16:46
+@@ -172,10 +172,19 @@
+     filepath = str(path.relative_to(repo_path))
+ 
+     if path.suffix == ".py":
+-        return chunk_python(content, filepath, repo_name)
+-    return chunk_generic(content, filepath, repo_name)
++        chunks = chunk_python(content, filepath, repo_name)
++    else:
++        chunks = chunk_generic(content, filepath, repo_name)
+ 
++    # Give each chunk its module identity. Inlined rather than split into its own
++    # function on purpose: chunker.py is itself inside the indexed corpus, so a
++    # new top-level def would add a chunk and change the corpus being measured.
++    for chunk in chunks:
++        chunk["content"] = f"# file: {filepath}\n{chunk['content']}"
+ 
++    return chunks
++
++
+ def chunk_repository(repo_path: Path, repo_name: str) -> list[dict[str, Any]]:
+     """Chunk all files in a repository."""
+     files = collect_files(repo_path)
