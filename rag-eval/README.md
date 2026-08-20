@@ -22,6 +22,7 @@
 | `run_eval.py` | 主评测,算 recall@k;跑前先自检 ground truth |
 | `compare_lang.py` | 中英文对照实验 |
 | `reindex.py` | 重建索引,并打印 chunk 来源分布 |
+| `hybrid.py` | BM25 + RRF 混合检索(实测负面,保留作对照) |
 | `patches/chunker.patch` | 对上游 `indexer/chunker.py` 的两处改动 |
 
 四个类别:
@@ -129,3 +130,19 @@ embedding 是本地 MiniLM,检索是本地 ChromaDB。
 
 输出三段:整体 recall@k、**按类别拆分**(这段才是能指导行动的)、以及未命中查询的 top-1 实际捞回内容。
 单一总分是用来汇报的,分类拆分才是用来干活的。
+
+## 切换检索器
+
+```bash
+RETRIEVER=hybrid uv run --directory <navigator> python "$PWD/run_eval.py"
+```
+
+`RETRIEVER` 默认 `vector`。`hybrid` 走 [`hybrid.py`](hybrid.py):自己实现的 BM25
+(代码感知分词,`FILE_TOOLS` 同时产出 `file_tools`/`file`/`tools`)+ RRF 融合,
+可用 `W_VECTOR` / `W_BM25` 调权重。
+
+**实测在这个语料上混合是负面的**(英文 @5:76% → 最好 68%),原因见根 README。
+保留它是作为可复现的对照,不是推荐配置。
+
+BM25 索引直接从 Chroma 取回的文档建立,**不是**重新调 `chunk_repository()`——
+这样即使切块器改过而索引没重建,两个检索臂搜的也一定是同一批文本。

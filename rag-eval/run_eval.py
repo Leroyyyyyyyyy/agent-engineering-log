@@ -38,9 +38,25 @@ from indexer.chunker import collect_files  # noqa: E402
 from indexer.embedder import Embedder  # noqa: E402
 from store.vector import VectorStore  # noqa: E402
 
+from hybrid import build_bm25, fuse  # noqa: E402
+
 EVAL_SET_PATH = Path(__file__).parent / "eval_set.json"
 K_VALUES = [1, 3, 5, 10]
 MAX_K = max(K_VALUES)
+
+# RETRIEVER=vector (default) | hybrid. Kept as an env switch so the two
+# retrievers run against the same eval set, same index and same metric -
+# the retriever is the only variable.
+RETRIEVER = os.environ.get("RETRIEVER", "vector")
+
+# How deep each arm goes before fusion. Fusing two top-10 lists would leave
+# almost nothing for RRF to reorder.
+CANDIDATE_K = 50
+
+W_VECTOR = float(os.environ.get("W_VECTOR", "1.0"))
+W_BM25 = float(os.environ.get("W_BM25", "1.0"))
+
+_bm25_cache: dict[str, tuple] = {}
 
 
 def load_eval_set() -> dict:
@@ -93,14 +109,49 @@ def validate_ground_truth(eval_set: dict) -> list[str]:
     return problems
 
 
+def get_bm25(store: VectorStore, collection: str) -> tuple:
+    """Build the BM25 index once per collection, then reuse it."""
+    if collection not in _bm25_cache:
+        _bm25_cache[collection] = build_bm25(store, collection)
+    return _bm25_cache[collection]
+
+
 def retrieve(store: VectorStore, embedder: Embedder, query: str, collection: str) -> list[dict]:
-    """Run one retrieval and return the top MAX_K chunks."""
+    """
+    Run one retrieval and return the top MAX_K chunks.
+
+    vector: the vector store alone.
+    hybrid: vector and BM25 rankings fused with RRF.
+    """
     query_embedding = embedder.embed_query(query)
-    return store.search(
+
+    if RETRIEVER == "vector":
+        return store.search(
+            query_embedding=query_embedding,
+            collection_name=collection,
+            n_results=MAX_K,
+        )
+
+    bm25, by_id = get_bm25(store, collection)
+
+    vector_hits = store.search(
         query_embedding=query_embedding,
         collection_name=collection,
-        n_results=MAX_K,
+        n_results=CANDIDATE_K,
     )
+    vector_ids = []
+    for hit in vector_hits:
+        vector_ids.append(hit["id"])
+        by_id[hit["id"]] = hit
+
+    bm25_ids = []
+    for doc_id, _score in bm25.search(query, CANDIDATE_K):
+        bm25_ids.append(doc_id)
+
+    results = []
+    for doc_id in fuse(vector_ids, bm25_ids, W_VECTOR, W_BM25)[:MAX_K]:
+        results.append(by_id[doc_id])
+    return results
 
 
 def first_hit_rank(results: list[dict], expected: list[str]) -> int | None:
@@ -248,6 +299,11 @@ def main() -> None:
     store = VectorStore()
     embedder = Embedder()
     collection = eval_set["collection"]
+
+    if RETRIEVER == "hybrid":
+        print(f"检索器: hybrid (RRF, w_vector={W_VECTOR}, w_bm25={W_BM25})\n")
+    else:
+        print("检索器: vector\n")
 
     rows = []
     for item in eval_set["queries"]:
