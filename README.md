@@ -108,7 +108,7 @@
 | [`rag-eval/`](rag-eval/) | 检索评测集与脚本(60 条查询,分 4 类) |
 | [`rag-eval/patches/chunker.patch`](rag-eval/patches/chunker.patch) | 对上游切块器的两处改动 |
 | [`agent-loop/my_agent.py`](agent-loop/my_agent.py) | 关掉源文件凭理解重写的 agent loop |
-| [`NOTES.md`](NOTES.md) | 45 条学习笔记,格式是「现象 → 规则」成对 |
+| [`NOTES.md`](NOTES.md) | 48 条学习笔记,格式是「现象 → 规则」成对 |
 
 ### `my_agent.py` 修掉的两个洞
 
@@ -196,21 +196,55 @@
 受影响最大的确实是短块,但**方向不固定**。同一批 chunk、同一个改动,
 中文 `value_lookup` +33、英文 ±0——**唯一的变量是查询语言**。
 
-改动已回滚,补丁留档在
-[`rag-eval/patches/path-prefix-rejected.patch`](rag-eval/patches/path-prefix-rejected.patch)。
+### 后来我怀疑这个否决是错的,于是设计实验去推翻它
 
-> ⚠️ **这个否决结论的作用范围比我当初写的窄,后来被自己推翻了一半。**
-> 上面的实验跑在 **28 条**评测集上,而那个评测集里的 `value_lookup` 全是
-> `BLOCKED_COMMANDS` / `MAX_STEPS` 这类**常量名本身就和查询词重合**的查询——
-> 根本不需要路径做桥梁。
->
-> 扩到 60 条后新增的查询暴露了反例:`MODEL_NAME = "all-MiniLM-L6-v2"` 是个
-> **31 字符**的小块,里面有 `MODEL_NAME` 和模型名,**却没有 "embedding" 这个词**,
-> 查询 "which embedding model is used" 直接 MISS。而它所在的文件叫 `indexer/embedder.py`
-> ——**桥梁恰恰在路径里**。
->
-> 所以结论应该收窄成:**「路径前缀对 28 条那个查询分布是净负面」**,
-> 而不是「路径前缀没用」。用 60 条重跑是待办中优先级最高的一项。
+评测集扩到 60 条后,我发现上面这个实验有个可疑之处:**28 条里的 `value_lookup`
+全是 `BLOCKED_COMMANDS` / `MAX_STEPS` 这类常量名本身就和查询词重合的查询**,
+根本不需要路径做桥梁——那个评测集**测不出路径前缀的价值**。
+
+新增的查询里就有反例:`MODEL_NAME = "all-MiniLM-L6-v2"` 是个 **31 字符**的小块,
+里面有 `MODEL_NAME` 和模型名,**却没有 "embedding" 这个词**,
+查询 "which embedding model is used" 直接 MISS——而它所在的文件叫 `indexer/embedder.py`,
+**桥梁恰恰在路径里**。
+
+所以我用 60 条重跑了**完全相同**的改动,并预先写下一条可证伪的断言:
+
+> 三条桥梁词齐全的英文 `value_lookup` 查询,**至少有两条应该从 MISS 变成命中**。
+
+| id | 前 | 后 | |
+|--|--|--|--|
+| q34 which **embedding** model is used | MISS | **rank 4** | 救回 |
+| q37 where are cloned **repositories** stored | MISS | rank 10 | @10 算,@5 不算 |
+| q40 how many results does **vector search** return | MISS | MISS | 没救回 |
+
+**按 @5 口径 1/3,断言不成立。** 而整体结果(英文 @5,n=60):
+
+| 类别 | 基线 | 加前缀 | Δ |
+|--|--:|--:|--:|
+| `exact_identifier` | 100% | 87% | **-13** |
+| `semantic` | 81% | 75% | -6 |
+| `value_lookup` | 79% | **71%** | **-8** |
+| `cross_file` | 46% | 43% | -3 |
+| **整体** | **76%** | **69%** | **-7** |
+
+**否决维持,而且比当初更硬**(n=60 上 -7,n=28 上 -9)。
+
+### 但机制被证实了——只是不够
+
+q34 的 top-1 和 top-2 **都来自 `indexer/embedder.py`**:路径桥梁确实把对的文件捞了上来,
+只是正确的那一块排在同文件另外两块后面。**桥梁增益是真的,但它换来的是每一块都变钝一点,
+失去的比捞回来的多。**
+
+> **「这个改动在我指定的几条查询上按机制生效」和「这个改动值得做」是两件事。**
+> 前者验证的是因果,后者要看它在全部查询上的净效果。前者成立完全不蕴含后者。
+
+我还顺手否掉了自己的第二个猜测——「前缀会把检索粒度从块拉向文件」。
+量了 top-5 里的平均不同文件数:**基线 3.267 → 加前缀 3.150**,只差 0.12。
+方向对,但**幅度太小,不足以当解释**。q34 那个「同文件两块霸榜」的例子是真的,
+但它是个案。**一个漂亮的个案不能升级成机制。**
+
+改动已回滚,基线八个数字逐格恢复。补丁留档在
+[`rag-eval/patches/path-prefix-rejected.patch`](rag-eval/patches/path-prefix-rejected.patch)。
 
 ### 中途发现的一个坑
 
