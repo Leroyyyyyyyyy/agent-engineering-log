@@ -110,6 +110,7 @@
 | [`rag-eval/patches/chunker.patch`](rag-eval/patches/chunker.patch) | 对上游切块器的两处改动 |
 | [`agent-loop/my_agent.py`](agent-loop/my_agent.py) | 关掉源文件凭理解重写的 agent loop |
 | [`NOTES.md`](NOTES.md) | 51 条学习笔记,格式是「现象 → 规则」成对 |
+| [`learn/hybrid-retrieval.md`](learn/hybrid-retrieval.md) | 混合检索自学教程(跑通 → 重写 → 读透) |
 
 ### `my_agent.py` 修掉的两个洞
 
