@@ -23,6 +23,7 @@
 | `compare_lang.py` | 中英文对照实验 |
 | `reindex.py` | 重建索引,并打印 chunk 来源分布 |
 | `hybrid.py` | BM25 + RRF 混合检索(实测负面,保留作对照) |
+| `rerank.py` | cross-encoder 重排(@1 +16,@5 +2) |
 | `patches/chunker.patch` | 对上游 `indexer/chunker.py` 的两处改动 |
 
 四个类别:
@@ -146,3 +147,17 @@ RETRIEVER=hybrid uv run --directory <navigator> python "$PWD/run_eval.py"
 
 BM25 索引直接从 Chroma 取回的文档建立,**不是**重新调 `chunk_repository()`——
 这样即使切块器改过而索引没重建,两个检索臂搜的也一定是同一批文本。
+
+## 开启重排
+
+```bash
+RERANK=1 uv run --directory <navigator> python "$PWD/run_eval.py"
+```
+
+候选池深度用 `RERANK_TOP_N`(默认 **20**,实测比 50 更好)。可以和 `RETRIEVER=hybrid` 叠加。
+
+实测(英文 @5):整体 76% → 78%。但**看 @1 是 36% → 52%**——
+reranker 擅长把最好的顶到最前,不擅长填满 5 个格子。**用哪个 k 决定它值不值。**
+
+⚠️ 已知偏见:`ms-marco-MiniLM` 训练在自然语言 passage 上,
+**对极短的代码常量块系统性打低分**(top-5 里 <200 字符的块从 36 个掉到 14 个)。

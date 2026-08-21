@@ -39,6 +39,7 @@ from indexer.embedder import Embedder  # noqa: E402
 from store.vector import VectorStore  # noqa: E402
 
 from hybrid import build_bm25, fuse  # noqa: E402
+from rerank import rerank  # noqa: E402
 
 EVAL_SET_PATH = Path(__file__).parent / "eval_set.json"
 K_VALUES = [1, 3, 5, 10]
@@ -55,6 +56,14 @@ CANDIDATE_K = 50
 
 W_VECTOR = float(os.environ.get("W_VECTOR", "1.0"))
 W_BM25 = float(os.environ.get("W_BM25", "1.0"))
+
+# RERANK=1 adds a cross-encoder second stage. It reorders the first stage's
+# top RERANK_TOP_N candidates, so its ceiling is whatever that pool contains -
+# it fixes ranking, never recall.
+RERANK = os.environ.get("RERANK", "") == "1"
+# 20 measured best. Deeper pools scored worse (N=50 -> 77%, N=20 -> 78%):
+# more candidates means more chances for the reranker to promote a wrong one.
+RERANK_TOP_N = int(os.environ.get("RERANK_TOP_N", "20"))
 
 _bm25_cache: dict[str, tuple] = {}
 
@@ -125,12 +134,19 @@ def retrieve(store: VectorStore, embedder: Embedder, query: str, collection: str
     """
     query_embedding = embedder.embed_query(query)
 
+    # With reranking on, the first stage must hand over a deeper pool than the
+    # MAX_K we finally report - that pool is the reranker's entire universe.
+    first_stage_k = RERANK_TOP_N if RERANK else MAX_K
+
     if RETRIEVER == "vector":
-        return store.search(
+        results = store.search(
             query_embedding=query_embedding,
             collection_name=collection,
-            n_results=MAX_K,
+            n_results=first_stage_k,
         )
+        if RERANK:
+            return rerank(query, results, MAX_K)
+        return results
 
     bm25, by_id = get_bm25(store, collection)
 
@@ -148,10 +164,15 @@ def retrieve(store: VectorStore, embedder: Embedder, query: str, collection: str
     for doc_id, _score in bm25.search(query, CANDIDATE_K):
         bm25_ids.append(doc_id)
 
+    fused = fuse(vector_ids, bm25_ids, W_VECTOR, W_BM25)[:first_stage_k]
+
     results = []
-    for doc_id in fuse(vector_ids, bm25_ids, W_VECTOR, W_BM25)[:MAX_K]:
+    for doc_id in fused:
         results.append(by_id[doc_id])
-    return results
+
+    if RERANK:
+        return rerank(query, results, MAX_K)
+    return results[:MAX_K]
 
 
 def first_hit_rank(results: list[dict], expected: list[str]) -> int | None:
@@ -301,9 +322,13 @@ def main() -> None:
     collection = eval_set["collection"]
 
     if RETRIEVER == "hybrid":
-        print(f"检索器: hybrid (RRF, w_vector={W_VECTOR}, w_bm25={W_BM25})\n")
+        stage1 = f"hybrid (RRF, w_vector={W_VECTOR}, w_bm25={W_BM25})"
     else:
-        print("检索器: vector\n")
+        stage1 = "vector"
+    if RERANK:
+        print(f"检索器: {stage1}  ->  cross-encoder 重排 (候选池 N={RERANK_TOP_N})\n")
+    else:
+        print(f"检索器: {stage1}\n")
 
     rows = []
     for item in eval_set["queries"]:
