@@ -7,6 +7,12 @@ module-level client and a hard-coded input() call.
 
 Tools and guardrails still live here. Splitting them out is deferred until
 they stop fitting.
+
+The loop is a GENERATOR (`run`). It yields one event per thing that happens
+instead of printing, because a print cannot be sent over HTTP and cannot be
+tested without capturing stdout. `agent()` is kept as a thin wrapper that
+drains the generator and returns the final string, so every existing caller
+and all 13 tests keep working unchanged.
 """
 
 from __future__ import annotations
@@ -34,6 +40,25 @@ ALLOWED_COMMANDS = {
 
 # Shell operators enable chaining/redirection, which defeats any allowlist.
 SHELL_OPERATORS = ["&&", "||", ";", "|", ">", "<", "`", "$(", "\n"]
+
+
+class CancellationToken:
+    """
+    One flag, checked at the top of every step and before every tool runs.
+
+    Stopping an agent is the harness's job, not the HTTP layer's: closing a
+    connection does not stop a subprocess that is already running. The token is
+    the thing an HTTP handler flips; the loop is the thing that honours it.
+    """
+
+    def __init__(self) -> None:
+        self.cancelled = False
+
+    def cancel(self) -> None:
+        self.cancelled = True
+
+    def __bool__(self) -> bool:
+        return self.cancelled
 
 
 def check_command(command: str) -> str | None:
@@ -86,8 +111,6 @@ def collect_text(content: list) -> str:
 
 def handle_tool_use(block, approve: str) -> dict:
     """Approve, validate and run one tool_use block. Always returns a tool_result."""
-    print(f"\n  -> Tool: {block.name}({block.input})")
-
     if not approved(approve):
         # Every tool_use needs a matching tool_result, even a refusal
         return {
@@ -100,7 +123,6 @@ def handle_tool_use(block, approve: str) -> dict:
     command = block.input["command"]
     rejection = check_command(command)
     if rejection:
-        print(f"  {rejection}")
         return {
             "type": "tool_result",
             "tool_use_id": block.id,
@@ -115,37 +137,138 @@ def handle_tool_use(block, approve: str) -> dict:
     }
 
 
-def agent(goal: str, provider, approve: str = "auto", max_steps: int = 10) -> str:
-    """Run the agent loop until the model stops asking for tools."""
+def run(
+    goal: str,
+    provider,
+    approve: str = "auto",
+    max_steps: int = 10,
+    cancel: CancellationToken | None = None,
+):
+    """
+    Run the agent loop, yielding one event per thing that happens.
+
+    Every event is a plain dict with a "type" key, so it can go straight into
+    an SSE frame, a JSONL log or a test assertion without a translation layer.
+
+    Event types:
+        text         model said something
+        tool_use     model asked for a tool, with the arguments it chose
+        tool_result  the tool ran (or was refused), is_error says which
+        usage        per-step token counts, when the provider reports them
+        done         finished normally, result is the final text
+        stopped      finished abnormally, reason says why
+        cancelled    the caller flipped the token
+    """
     messages = [{"role": "user", "content": goal}]
 
     for step in range(max_steps):
+        if cancel:
+            yield {"type": "cancelled", "step": step}
+            return
+
         response = provider.create(messages, TOOLS)
         # Append the raw content blocks unchanged - thinking blocks must survive
         messages.append({"role": "assistant", "content": response.content})
 
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            # Cache tokens are separate fields, not a subset of input_tokens.
+            # Billing needs them apart: writing cache costs MORE than plain
+            # input, reading it costs an order of magnitude LESS. Folding them
+            # into one number is wrong in both directions at once.
+            yield {
+                "type": "usage",
+                "step": step,
+                "input_tokens": getattr(usage, "input_tokens", None),
+                "output_tokens": getattr(usage, "output_tokens", None),
+                "cache_creation_input_tokens": getattr(
+                    usage, "cache_creation_input_tokens", None
+                ),
+                "cache_read_input_tokens": getattr(usage, "cache_read_input_tokens", None),
+            }
+
         if response.stop_reason == "end_turn":
-            return collect_text(response.content) or "(model returned no text)"
+            yield {
+                "type": "done",
+                "result": collect_text(response.content) or "(model returned no text)",
+            }
+            return
 
         if response.stop_reason == "max_tokens":
             partial = collect_text(response.content)
-            return f"Stopped: hit max_tokens on step {step + 1}.\nPartial output:\n{partial}"
+            yield {
+                "type": "stopped",
+                "reason": "max_tokens",
+                "result": (
+                    f"Stopped: hit max_tokens on step {step + 1}.\n"
+                    f"Partial output:\n{partial}"
+                ),
+            }
+            return
 
         if response.stop_reason != "tool_use":
             # refusal, pause_turn, or anything added to the enum later
-            return f"Stopped: unhandled stop_reason '{response.stop_reason}'"
+            yield {
+                "type": "stopped",
+                "reason": str(response.stop_reason),
+                "result": f"Stopped: unhandled stop_reason '{response.stop_reason}'",
+            }
+            return
 
-        # One tool_result per tool_use, all in a single user message
+        # One tool_result per tool_use, all in a single user message.
+        # The pairing is not optional: a tool_use with no matching tool_result
+        # is a 400 from the API on the next request.
         tool_results = []
         for block in response.content:
             if block.type == "text":
-                print(f"\n{block.text}")
+                yield {"type": "text", "text": block.text}
             elif block.type == "tool_use":
-                tool_results.append(handle_tool_use(block, approve))
+                yield {"type": "tool_use", "name": block.name, "input": block.input}
+
+                if cancel:
+                    # Still emit a tool_result, or the history is unsendable.
+                    tool_results.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": "Cancelled by user before execution.",
+                            "is_error": True,
+                        }
+                    )
+                    messages.append({"role": "user", "content": tool_results})
+                    yield {"type": "cancelled", "step": step}
+                    return
+
+                result = handle_tool_use(block, approve)
+                tool_results.append(result)
+                yield {
+                    "type": "tool_result",
+                    "content": result["content"],
+                    "is_error": result.get("is_error", False),
+                }
 
         messages.append({"role": "user", "content": tool_results})
 
-    return f"Stopped: reached the {max_steps}-step limit without finishing"
+    yield {
+        "type": "stopped",
+        "reason": "max_steps",
+        "result": f"Stopped: reached the {max_steps}-step limit without finishing",
+    }
+
+
+def agent(goal: str, provider, approve: str = "auto", max_steps: int = 10) -> str:
+    """Drain run() and return only the final string. The pre-SSE interface."""
+    final = "(loop produced no result)"
+    for event in run(goal, provider, approve=approve, max_steps=max_steps):
+        if event["type"] == "text":
+            print(f"\n{event['text']}")
+        elif event["type"] == "tool_use":
+            print(f"\n  -> Tool: {event['name']}({event['input']})")
+        elif event["type"] == "tool_result" and event["is_error"]:
+            print(f"  {event['content']}")
+        elif event["type"] in ("done", "stopped"):
+            final = event["result"]
+    return final
 
 
 if __name__ == "__main__":
