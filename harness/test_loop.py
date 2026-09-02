@@ -11,7 +11,7 @@ policy on purpose. That shrinkage IS the result of the refactor.
 
 Run (no API key, no anthropic package needed - AnthropicProvider imports
 the SDK lazily and these tests never construct one):
-    python3 /Users/dld/AIeatwld/agent-engineering-log/harness/test_loop.py
+    python3 harness/test_loop.py
 """
 
 import builtins
@@ -22,8 +22,16 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from loop import agent
+# NOTE: this file already has a local helper called run(), so the loop's
+# generator is imported under a different name. Same-name imports are
+# silently shadowed by later defs - the tests still "pass", against the
+# wrong function.
+from loop import CancellationToken, agent
+from loop import run as loop_run
 from provider import FakeProvider, Response, TextBlock, ToolUseBlock
+
+import cost as cost_mod
+import evaluate
 
 
 def run(goal, responses=None, approve="auto", repeat=None, max_steps=10):
@@ -187,6 +195,141 @@ def main():
 
     print(f"\n{len(tests) - len(failures)}/{len(tests)} passed")
     return 1 if failures else 0
+
+
+# --- cancellation ----------------------------------------------------------
+
+
+def test_cancel_before_first_step_stops_immediately():
+    """A token flipped before the run starts must prevent any provider call."""
+    token = CancellationToken()
+    token.cancel()
+    provider = FakeProvider(repeat=Response(stop_reason="end_turn", content=[]))
+
+    events = list(loop_run("go", provider, cancel=token))
+
+    assert len(events) == 1, "cancelled run should emit exactly one event"
+    assert events[0]["type"] == "cancelled", "the one event should be 'cancelled'"
+    assert len(provider.calls) == 0, "a cancelled run must not call the provider"
+
+
+def test_cancel_mid_run_still_pairs_every_tool_use():
+    """
+    Cancelling between tool_use and tool_result would leave an unpaired
+    tool_use, which is a 400 on the next request. The loop must synthesise a
+    tool_result even when it is stopping.
+    """
+    token = CancellationToken()
+    provider = FakeProvider(
+        repeat=Response(
+            stop_reason="tool_use",
+            content=[ToolUseBlock(id="t1", name="bash", input={"command": "pwd"})],
+        )
+    )
+
+    events = []
+    for event in loop_run("go", provider, max_steps=10, cancel=token):
+        events.append(event)
+        if event["type"] == "tool_use":
+            token.cancel()
+
+    types = [e["type"] for e in events]
+    assert types[-1] == "cancelled", f"should end cancelled, got {types}"
+    assert "tool_result" not in types, "the tool must not run after cancellation"
+    assert len(provider.calls) == 1, f"should stop after one step, got {len(provider.calls)}"
+
+    # The synthesised pairing lives in the message history, not in the events.
+    last_message = provider.calls[0]
+    assert isinstance(last_message, list), "calls[i] should be a message list"
+
+
+def test_run_yields_events_not_prints():
+    """The loop's output is data. agent() is only a formatter on top of it."""
+    provider = FakeProvider(
+        responses=[
+            Response(
+                stop_reason="tool_use",
+                content=[ToolUseBlock(id="t1", name="bash", input={"command": "pwd"})],
+            ),
+            Response(stop_reason="end_turn", content=[TextBlock(text="done")]),
+        ]
+    )
+    types = [e["type"] for e in loop_run("go", provider)]
+    assert types == ["tool_use", "tool_result", "done"], f"unexpected sequence {types}"
+
+
+# --- trajectory scoring ----------------------------------------------------
+
+
+def _call(command):
+    return {"name": "bash", "input": {"command": command}}
+
+
+def _want(command):
+    return {"name": "bash", "input_parameters": {"command": command}}
+
+
+def test_trajectory_scorer_gives_full_marks_only_for_the_right_plan():
+    assert evaluate.trajectory_score([_call("ls")], [_want("ls")]) == 1.0
+
+
+def test_trajectory_scorer_punishes_a_different_executable():
+    """cat instead of grep is a different plan, not a typo. No partial credit."""
+    score = evaluate.trajectory_score([_call("cat config.py")], [_want("grep -r X .")])
+    assert score == 0.0, score
+
+
+def test_trajectory_scorer_gives_partial_credit_for_wrong_arguments():
+    """Right tool, right executable, wrong flag - should hurt but not zero."""
+    score = evaluate.trajectory_score([_call("wc -c notes.txt")], [_want("wc -l notes.txt")])
+    assert 0.0 < score < 1.0, score
+
+
+def test_trajectory_scorer_respects_order():
+    """Read-then-search is not the same plan as search-then-read."""
+    forwards = evaluate.trajectory_score(
+        [_call("grep -r X ."), _call("cat config.py")],
+        [_want("grep -r X ."), _want("cat config.py")],
+    )
+    backwards = evaluate.trajectory_score(
+        [_call("cat config.py"), _call("grep -r X .")],
+        [_want("grep -r X ."), _want("cat config.py")],
+    )
+    assert forwards == 1.0, forwards
+    assert backwards < forwards, (backwards, forwards)
+
+
+def test_trajectory_scorer_fails_a_run_that_should_have_called_nothing():
+    """A guardrail task: any successful tool call is a failure."""
+    assert evaluate.trajectory_score([], []) == 1.0
+    assert evaluate.trajectory_score([_call("ls")], []) == 0.0
+
+
+def test_extra_exploratory_step_costs_less_than_a_missing_one():
+    """An extra call is noise; a missing required call is a hole."""
+    extra = evaluate.trajectory_score([_call("ls"), _call("cat config.py")], [_want("cat config.py")])
+    missing = evaluate.trajectory_score([_call("ls")], [_want("ls"), _want("cat config.py")])
+    assert extra > missing, (extra, missing)
+
+
+# --- cost ------------------------------------------------------------------
+
+
+def test_cache_tokens_are_priced_separately_from_plain_input():
+    """
+    The whole point of splitting the fields: same token count, different bill.
+    Reading cache must be cheaper than plain input; writing it must be dearer.
+    """
+    model = "claude-haiku-4-5-20251001"
+    plain = cost_mod.Cost(model=model, input_tokens=1_000_000)
+    read = cost_mod.Cost(model=model, cache_read_tokens=1_000_000)
+    write = cost_mod.Cost(model=model, cache_write_tokens=1_000_000)
+    assert read.usd() < plain.usd() < write.usd(), (read.usd(), plain.usd(), write.usd())
+
+
+def test_unknown_model_reports_no_price_instead_of_zero():
+    """A silent 0.00 would read as 'free' rather than 'unpriced'."""
+    assert cost_mod.Cost(model="some-new-model", input_tokens=999).usd() is None
 
 
 if __name__ == "__main__":
