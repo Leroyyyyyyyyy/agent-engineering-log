@@ -50,6 +50,26 @@ MAX_K = max(K_VALUES)
 # the retriever is the only variable.
 RETRIEVER = os.environ.get("RETRIEVER", "vector")
 
+# STORE=chroma (default) | qdrant. Same eval set, same embeddings, same chunks -
+# only the vector database changes, so any movement in the numbers is the store.
+STORE = os.environ.get("STORE", "chroma")
+
+if STORE == "qdrant" and RETRIEVER == "hybrid":
+    sys.exit(
+        "STORE=qdrant 不能配 RETRIEVER=hybrid: hybrid.py:127 直接调 "
+        "store.client.get_collection(...).get(...), 那是 Chroma 专有 API。\n"
+        "混合检索已被否决(九组参数全输), 所以这里直接拦掉而不是去适配。"
+    )
+
+
+def make_store():
+    """The store both run_eval.py and reindex.py build, so they can never drift."""
+    if STORE == "qdrant":
+        from qdrant_store import QdrantStore
+
+        return QdrantStore()
+    return VectorStore()
+
 # How deep each arm goes before fusion. Fusing two top-10 lists would leave
 # almost nothing for RRF to reorder.
 CANDIDATE_K = 50
@@ -317,9 +337,10 @@ def main() -> None:
         sys.exit(1)
     print(f"  {len(eval_set['queries'])} 条查询的 ground truth 全部在语料中找到\n")
 
-    store = VectorStore()
+    store = make_store()
     embedder = Embedder()
     collection = eval_set["collection"]
+    print(f"向量库:   {STORE}" + (f"  ({store.backend})" if STORE == "qdrant" else ""))
 
     if RETRIEVER == "hybrid":
         stage1 = f"hybrid (RRF, w_vector={W_VECTOR}, w_bm25={W_BM25})"

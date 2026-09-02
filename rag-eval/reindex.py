@@ -15,11 +15,10 @@ import sys
 from collections import Counter
 from typing import Any
 
-from run_eval import UPSTREAM, load_eval_set  # noqa: E402
+from run_eval import STORE, UPSTREAM, load_eval_set, make_store  # noqa: E402
 
 from indexer.chunker import chunk_repository  # noqa: E402
 from indexer.embedder import Embedder, index_chunks  # noqa: E402
-from store.vector import VectorStore  # noqa: E402
 
 
 def print_source_distribution(chunks: list[dict[str, Any]], top_n: int = 12) -> None:
@@ -59,7 +58,8 @@ def main() -> None:
 
     print_source_distribution(chunks)
 
-    store = VectorStore()
+    store = make_store()
+    print(f"向量库:     {STORE}")
 
     # 必须先删旧 collection, 不能直接覆盖写。
     # chunk id 是 "<collection>:<filepath>:<start_line>", 改了切块边界之后大部分
