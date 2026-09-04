@@ -1581,3 +1581,17 @@ IDE、浏览器和命令行可以各自启动不同的 kernel 进程树,同一�
 或在 notebook 中显式传入非敏感的 `base_url`,不要只依赖父进程注入。
 
 (证据强度:直接实测,三个 kernel 的进程环境对照 + 401 错误格式)
+
+### 79. API key 有效不等于 API endpoint 选对了
+
+**现象**:一个格式正确的 LangSmith PAT 请求默认 GCP US endpoint 时,写 trace 和读取 project
+都返回 **403 Forbidden**;换 EU 和 AWS US 仍失败,换成
+`https://apac.api.smith.langchain.com` 后认证成功,并能在 `langchain-academy` project 中
+读到刚写入的 `langsmith-config-smoke` trace。
+
+**规则**:**凭证和服务区域是一个配置对,不能只校验 key。** SaaS 按区域隔离数据时,
+同一个 SDK 会默认连接某一区域;区域选错的症状可能只是 403,看起来和 key 无效完全一样。
+配置第三方可观测后端时至少验证三件事:`API key + endpoint + 写后读回`。只看环境变量存在,
+或者只看到上传代码没有抛错,都不能证明链路已接通。
+
+(证据强度:直接实测,四个区域 endpoint 对照 + trace 写后读回)
