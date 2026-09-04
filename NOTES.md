@@ -1595,3 +1595,33 @@ IDE、浏览器和命令行可以各自启动不同的 kernel 进程树,同一�
 或者只看到上传代码没有抛错,都不能证明链路已接通。
 
 (证据强度:直接实测,四个区域 endpoint 对照 + trace 写后读回)
+
+### 80. `thread_id` 是地址,checkpointer 才是记忆
+
+**现象**:同一个 Agent 图只替换 checkpointer:`MemorySaver` 能让相同 `thread_id` 的多轮调用
+接上历史,但数据只在当前 kernel 内;换成磁盘 `SqliteSaver` 后,
+`state_db/local-example.db` 中实际写入了 **9 条 checkpoint**,进程重启后只要重新连接同一文件、
+重新编译图,就能按同一个 `thread_id` 读取。换数据库或使用 `:memory:` 都读不到。
+
+**规则**:**标识符只负责定位,存储介质才决定持久性。** 回答「有没有记忆」不能只看
+`thread_id`/`session_id` 是否相同,必须同时问「状态存在哪里、对象销毁后还在不在」。
+恢复测试必须跨过真实故障边界:内存方案至少重建对象,持久化方案至少重启进程并重连同一存储。
+
+对照自己的 harness:LangGraph 的路线是每 step 保存图状态 snapshot;
+计划中的 harness 路线是 intent/result 事件对 + 预分配 id。前者恢复控制流方便,
+后者不需要决定快照时机,但要求副作用能靠 id 判定是否已完成。
+
+(证据强度:直接实测,SQLite 文件中按 thread 统计到 9 条 checkpoint)
+
+### 81. 模型看到的上下文不等于系统保存的状态
+
+**现象**:过滤节点只执行 `llm.invoke(state["messages"][-1:])` 时,模型请求只包含最后一条消息,
+但图的最终 state 仍保留完整历史;使用 `RemoveMessage` 经 `add_messages` reducer 合并后,
+对应消息才真正从 state 消失。`trim_messages` 同样可以只裁剪本轮模型输入,不必删除存储状态。
+
+**规则**:**持久化状态和 provider context 是两个接口。** 过滤/裁剪发送给模型的视图,
+解决的是 token 成本和上下文窗口;修改 reducer 返回值,改变的才是后续步骤能够恢复的数据。
+把两者绑在一起会让「省 token」意外变成「永久失忆」。设计时应分别回答:
+系统保存什么,以及这一轮允许模型看什么。
+
+(证据强度:直接实测,过滤前后 state 消息数不变,模型 trace 只含末条消息)
