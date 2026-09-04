@@ -1519,3 +1519,65 @@ def run(goal, responses=None):    # 文件里本来就有的辅助函数, 把导
 它就还停在「现象层」,只是听起来像规则。**
 这正是这个项目一直在纠的那个毛病,而写规则的人自己也会犯。
 (证据强度:实测,同一条规则在写下后一小时内被自己违反两次)
+
+### 76. 文档里的图片引用也是可验证的依赖
+
+**现象**:把外部文章翻译成 Markdown 时,从原页面识别出 **8 张正文图片**,下载到 `docs/assets/` 后逐个检查，8 个相对路径全部存在；图片资源总大小约 **4.0 MB**。页面还包含 hero SVG、站点 logo 和相关文章占位图，如果不区分正文与站点装饰，就会把无关资源一起带进译文。
+
+**规则**:**文档资源不是“顺手复制的附件”,而是需要像代码依赖一样做范围筛选和存在性校验。**先按正文位置区分内容资源与站点资源，再把图片改成本地相对路径；写完后用脚本逐个解析 Markdown 引用并检查文件存在，不能只看预览页面“好像能显示”。
+
+(证据强度:直接实测,8/8 引用通过存在性检查)
+
+### 77. 串行时「自己拼」和「声明 reducer」等价,并行时只有后者能用
+
+**现象**:LangGraph 的 `simple-graph` 里,`State` 是普通 TypedDict、没声明 reducer,
+三个 node 都返回 `{"graph_state": ...}`,最终输出 `'Hi, this is Lance. I am sad!'`
+**看起来像多段拼接**。但拼接不是框架做的,是 node 自己做的:
+`return {"graph_state": state['graph_state'] + " I am"}` —— 先读旧值,交上去的是完整一整句。
+**channel 的默认行为是覆盖(last write wins)**,把那个 `+` 去掉,前面的内容就没了。
+
+真正的分水岭在并行。实测(20 行,无需 API key):
+
+```
+两个 node 并行写同一个 key,无 reducer:
+  InvalidUpdateError: At key 'v': Can receive only one value per step.
+                      Use an Annotated key to handle multiple values.
+同一个图,加 Annotated[list, operator.add]:
+  {'v': ['A', 'B']}
+```
+
+**规则**:**「合并策略」是并发的一部分,不是数据结构的一部分。**
+
+串行只有一个写入者,「怎么合」可以藏在写入者内部,自己读旧值再拼就行,看不出缺了什么。
+一旦有第二个并发写入者,框架必须在**它俩之外**知道该保留谁——藏在 node 里的拼接逻辑
+框架读不到,所以只能报错。reducer 就是把这个策略从写入者手里**外置**到 channel 上。
+
+**推论(不限于 LangGraph)**:凡是「每个写入者自己读-改-写」的结构,
+**在单写入者下永远看起来是对的,加并发时一定要重写**。
+判据不是「现在有没有 bug」,而是**「如果有两个人同时写这个字段,框架凭什么决定留谁」——
+答不上来就说明策略还藏在写入者内部**。
+
+**代价**:外置之后 reducer 会有自己的语义,不能想当然。
+`add_messages` 就不是纯 append ——它按 message id 做 upsert(同 id 覆盖)、支持 `RemoveMessage`。
+所以「我明明 append 了怎么没变多」不是 bug,是 reducer 在按 id 去重。
+
+对照自己的 harness:`messages` 是在循环里直接 `append`,「怎么合并」散在每个调用点。
+现在是单写入者所以没问题,**但第 1 层要做并发工具执行,这一条会正面撞上**。
+
+(证据强度:直接实测,并行无 reducer 稳定抛 `InvalidUpdateError`)
+
+### 78. Notebook 用的是哪个环境,取决于 kernel 的进程树
+
+**现象**:Jupyter Server 及其启动的两个 kernel 都有 `OPENAI_BASE_URL`,但 VS Code 另行启动的
+kernel 没有继承这个变量。同一份 `ChatOpenAI(model="deepseek-chat")` 因而把 DeepSeek key
+发给了 OpenAI 官方地址,返回 **401 `invalid_api_key`**;把
+`base_url="https://api.deepseek.com"` 显式传给构造函数后,检查
+`llm.root_client.base_url` 才得到正确地址。
+
+**规则**:**不要从终端或 Jupyter Server 的环境,推断当前 Notebook kernel 的环境。**
+IDE、浏览器和命令行可以各自启动不同的 kernel 进程树,同一路径、同一个 venv 也不代表
+继承了同一组环境变量。跨提供商使用 OpenAI 兼容接口时,配置是
+`model + base_url + api_key` 三元组;第一次请求前应检查客户端解析出的实际 `base_url`,
+或在 notebook 中显式传入非敏感的 `base_url`,不要只依赖父进程注入。
+
+(证据强度:直接实测,三个 kernel 的进程环境对照 + 401 错误格式)
